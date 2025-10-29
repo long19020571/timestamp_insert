@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Auto Edit Panel</title>
+  <style>
+    body { font-family: sans-serif; padding: 10px; }
+    input { margin-bottom: 10px; width: 100%; }
+    button { padding: 10px; width: 100%; background: #007acc; color: white; border: none; cursor: pointer; }
+    button:hover { background: #005fa3; }
+  </style>
+</head>
+<body>
+  <h3>🎬 Auto Edit for Premiere Pro</h3>
+  <label>CSV File (text):</label>
+  <input type="file" id="csvFile" accept=".csv"><br>
+  <label>Video Folder:</label>
+  <input type="file" id="videoFolder" webkitdirectory directory><br>
+  <button id="runBtn">Run Auto Edit</button>
+  <textarea id="logBox" style="width:100%; height:200px;"></textarea>
+
+
+	<script src="js/CSInterface.js"></script>
+	<script src="js/main.js"></script>
+</body>
+</html>
