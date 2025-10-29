@@ -1,2 +1,2 @@
 # timestamp_insert
-Adoe Premiere Pro 2025
+Adobe Premiere Pro 2025
