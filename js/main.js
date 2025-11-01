@@ -28,9 +28,18 @@ window.log = log; // cho phép JSX gọi lại panel
 document.getElementById("runBtn").addEventListener("click", () => {
     const csvFile = document.getElementById("csvFile").files[0];
     const folder = document.getElementById("videoFolder").files;
+    
+    // --- (MỚI) Lấy thêm MOGRT và Màu sắc ---
+    const mogrtFile = document.getElementById("mogrtFile").files[0];
 
     if (!csvFile || folder.length === 0) {
         alert("Vui lòng chọn file CSV và thư mục video!");
+        return;
+    }
+    
+    // --- (MỚI) Kiểm tra MOGRT ---
+    if (!mogrtFile) {
+        alert("Vui lòng chọn file .mogrt!");
         return;
     }
 
@@ -40,22 +49,29 @@ document.getElementById("runBtn").addEventListener("click", () => {
         const csvText = e.target.result;
 
         // ====== TẠO DANH SÁCH ĐƯỜNG DẪN FILE VIDEO ======
-        // CEP mới không có f.path → tự xây dựng path dựa vào folder đầu tiên
         const firstFile = folder[0];
         let folderPath = "";
         if (firstFile.webkitRelativePath) {
-            folderPath = firstFile.webkitRelativePath.split("/")[0]; // tên thư mục
+            folderPath = firstFile.webkitRelativePath.split("/")[0];
         }
 
         const files = Array.from(folder).map(f => {
-            if (f.path) return f.path.replace(/\\/g, "\\\\"); // bản CEP cũ
-            return folderPath + "/" + f.name;                 // fallback
+            if (f.path) return f.path.replace(/\\/g, "\\\\");
+            return folderPath + "/" + f.name;
         });
+        
+        // --- (MỚI) Lấy đường dẫn MOGRT (file đơn nên f.path hoạt động) ---
+        const mogrtPath = mogrtFile.path.replace(/\\/g, "\\\\");
 
         log("📂 CSV loaded. Gửi dữ liệu sang Premiere...");
 
-        // ====== GỌI JSX TRONG PREMIERE ======
-        const command = `autoEditFromCSV(${JSON.stringify(csvText)}, ${JSON.stringify(files)})`;
+        // ====== GỌI JSX TRONG PREMIERE (Đã cập nhật) ======
+        // Gửi thêm 4 tham số: mogrtPath, boxFillColor, boxStrokeColor
+        const command = `autoEditFromCSV(
+            ${JSON.stringify(csvText)}, 
+            ${JSON.stringify(files)}, 
+            ${JSON.stringify(mogrtPath)}
+        )`;
 
         csInterface.evalScript(command, function (result) {
             if (result) log("✅ Kết quả: " + result);

@@ -1,8 +1,13 @@
 /**
- * host_log_enabled.jsx (source trim + gap filler)
- * - Source Trim: chỉ chèn đúng đoạn theo CSV
- * - Nếu thiếu file video → chèn black video cùng độ dài
- * - Hoạt động ổn định trên Premiere 2022–2025
+ * host_DUNG_importMGT.jsx
+ * - V1: Source Trim video
+ * - V2: Chèn MOGRT bằng hàm seq.importMGT() (theo tài liệu)
+ *
+ * - FIX 1: Sửa lỗi "SolidColor does not have a constructor".
+ * - FIX 2: Sửa lỗi tìm MOGRT (bỏ đuôi .mogrt). (Logic này đã bị xóa vì dùng importMGT)
+ * - FIX 3: Sửa lỗi typo 'clearOutPoint'.
+ * - FIX 4: Cập nhật Regex CSV và parseTimecode.
+ * - FIX 5 (MỚI): Chuyển đổi 'seconds' sang 'ticks' cho hàm importMGT.
  */
 
 function sendLog(msg) {
@@ -18,11 +23,13 @@ function safeTrim(s) {
     catch (e) { return s; }
 }
 
-// ==== Parse timecode ====
+// ==== Parse timecode (Xử lý dấu phẩy an toàn) ====
 function parseTimecode(tc) {
     if (tc === undefined || tc === null) return NaN;
-    tc = String(tc).replace(/"/g, "").replace(/^\uFEFF/, "").replace(",", ".");
+    tc = String(tc).replace(/"/g, "").replace(/^\uFEFF/, "");
     tc = tc.replace(/^\s+|\s+$/g, "");
+    tc = tc.replace(/,(\d+)$/, '.$1'); // Thay dấu phẩy cuối cùng bằng dấu chấm
+
     var parts = tc.split(/[:.]/);
     if (parts.length < 3) return NaN;
     if (parts.length < 4) parts.push("0");
@@ -33,7 +40,17 @@ function parseTimecode(tc) {
     return h * 3600 + m * 60 + s + ms / 1000.0;
 }
 
-// ==== Parse CSV safely ====
+// ==== (CẬP NHẬT) Chuyển đổi màu Hex sang object {r, g, b} ====
+function hexToRGB(hex) {
+    var r = 0, g = 0, b = 0;
+    if (hex.charAt(0) == '#') { hex = hex.substring(1); }
+    r = parseInt(hex.substring(0, 2), 16);
+    g = parseInt(hex.substring(2, 4), 16);
+    b = parseInt(hex.substring(4, 6), 16);
+    return { r: r, g: g, b: b }; 
+}
+
+// ==== Parse CSV (CẬP NHẬT REGEX) ====
 function parseCSV(csvText) {
     if (!csvText) return [];
     csvText = String(csvText).replace(/^\uFEFF/, "");
@@ -46,17 +63,22 @@ function parseCSV(csvText) {
         if (trimmed === "" || /^,+$/.test(trimmed)) continue;
         lines.push(trimmed);
     }
-
     var data = [];
     for (var j = 0; j < lines.length; j++) {
         var line = lines[j];
-        var match = line.match(/^\s*([^,]+)\s*,\s*"?([^"]+)"?\s*,\s*"?([^"]+)"?\s*$/);
-        if (!match) continue;
+        var match = line.match(/^\s*([^,]+)\s*,\s*"?([^"]+)"?\s*,\s*"?([^"]+)"?\s*(?:,\s*"?([^"]+)"?\s*)?/i);
+        if (!match) {
+            sendLog("⚠️ Dòng CSV không hợp lệ (bỏ qua): " + line);
+            continue;
+        }
         var name = safeTrim(match[1]);
         var start = parseTimecode(match[2]);
         var end = parseTimecode(match[3]);
+        var textEditCmd = (match[4] && match[4] !== "") ? safeTrim(match[4]) : null; 
         if (!isNaN(start) && !isNaN(end)) {
-            data.push({ name: name, start: start, end: end });
+            data.push({ name: name, start: start, end: end, textEdit: textEditCmd });
+        } else {
+             sendLog("⚠️ Timecode không hợp lệ (bỏ qua): " + line);
         }
     }
     return data;
@@ -97,8 +119,8 @@ function findFilePath(list, filename) {
 // ===================================================
 // =============== MAIN FUNCTION =====================
 // ===================================================
-function autoEditFromCSV(csvText, videoPaths) {
-    sendLog("🚀 Auto Edit (Source Trim + Gap Filler)");
+function autoEditFromCSV(csvText, videoPaths, mogrtPath, boxFillColor, boxStrokeColor) {
+    sendLog("🚀 Bắt đầu Auto Edit (Sử dụng seq.importMGT)");
 
     try {
         var data = parseCSV(csvText);
@@ -108,53 +130,113 @@ function autoEditFromCSV(csvText, videoPaths) {
         }
         if (!app.project.activeSequence) return "no_sequence";
 
-        var seq = app.project.activeSequence;
+        var seq = app.project.activeSequence; // Lấy sequence
         if (!seq.videoTracks || seq.videoTracks.numTracks === 0) return "no_track";
+
+        // --- (CẬP NHẬT) Đã xóa khối logic import MOGRT ở đây ---
+        // Chúng ta sẽ import trực tiếp trong vòng lặp
+
+        if (seq.videoTracks.numTracks < 2) {
+             sendLog("⚠️ Cảnh báo: Cần ít nhất 2 video track (V1, V2). Sẽ bỏ qua MOGRT text.");
+        }
+
 
         for (var i = 0; i < data.length; i++) {
             var row = data[i];
             var duration = row.end - row.start;
             if (duration <= 0) continue;
 
-            sendLog("🎞 Clip " + (i + 1) + ": " + row.name + " (" + row.start + "s → " + row.end + "s)");
-
+            // --- PHẦN 1: XỬ LÝ VIDEO (Giữ nguyên logic 'Find or Import') ---
+            sendLog("🎞 Clip " + (i + 1) + ": " + row.name);
             var clipPath = findFilePath(videoPaths, row.name);
             var item = null;
 
             if (clipPath) {
                 try {
-                    app.project.importFiles([clipPath], 1, app.project.rootItem, 0);
                     item = findProjectItemByName(app.project.rootItem, String(row.name).toLowerCase());
-                } catch (eImp) {
-                    sendLog("⚠️ Lỗi import: " + eImp);
+                    if (!item) {
+                        sendLog("Đang import video: " + row.name);
+                        app.project.importFiles([clipPath], 1, app.project.rootItem, 0);
+                        item = findProjectItemByName(app.project.rootItem, String(row.name).toLowerCase());
+                    }
+                } catch (eImp) { sendLog("⚠️ Lỗi import: " + eImp); }
+            }
+
+            if (item) {
+                try {
+                    item.setInPoint(row.start, 4);
+                    item.setOutPoint(row.end, 4);
+                    
+                    var t = new Time();
+                    t.seconds = row.start;
+                    seq.videoTracks[1].insertClip(item, t); // Chèn vào V1 (index 0)
+                    sendLog("✅ Đã chèn clip: " + row.name + " @ " + row.start + "s");
+
+                    // *** FIX ***: Sửa lỗi typo
+                    item.clearInPoint(); 
+                    item.clearOutPoint();
+                } catch (eVideo) {
+                    sendLog("❌ Lỗi xử lý clip: " + eVideo);
                 }
+            } else {
+                sendLog("⚠️ Không tìm thấy file: " + row.name + ". Bỏ qua.");
             }
-
-
-            // Source Trim
-            try {
-                item.setInPoint(row.start, 4);
-                item.setOutPoint(row.end, 4);
-            } catch (eTrim2) {
-                sendLog("⚠️ Lỗi setIn/OutPoint: " + eTrim2);
-                continue;
+            
+            // --- (CẬP NHẬT) PHẦN 2: XỬ LÝ TEXT MOGRT (Dùng importMGT) ---
+            var textContent = null;
+            if (row.textEdit && row.textEdit.indexOf("TEXT_EDIT(") === 0) {
+                textContent = row.textEdit.substring(10, row.textEdit.length - 1);
             }
+            
+            // Điều kiện: Có text, có đường dẫn MOGRT, và có ít nhất 2 track
+            if (textContent && mogrtPath && seq.videoTracks.numTracks >= 2) {
+                
+                var graphicClip = null;
+                
+                try {
+                    sendLog("✍️ Đang import MOGRT (seq.importMGT): " + textContent);
 
-            // Insert trimmed clip
-            try {
-                var t = new Time();
-                t.seconds = row.start;
-                seq.videoTracks[0].insertClip(item, t);
-                sendLog("✅ Đã chèn clip: " + row.name + " @ " + row.start + "s");
-            } catch (eInsert) {
-                sendLog("❌ Lỗi insertClip: " + eInsert);
-            }
+                    // 1. Chuyển đổi 'seconds' (giây) sang 'ticks'
+                    var t_start = new Time();
+                    t_start.seconds = row.start;
+                    var timeInTicks = t_start.ticks; // Lấy 'ticks'
+                    
+                    // 2. GỌI HÀM importMGT()
+                    // (path, timeInTicks, vidTrackOffset, audTrackOffset)
+                    // vidTrackOffset = 1 (nghĩa là chèn vào V2, vì V1 là index 0)
+                    // audTrackOffset = 0 (không có audio)
+                    graphicClip = seq.importMGT(mogrtPath, timeInTicks, 2, 0);
+                    
+                    if (!graphicClip) {
+                        sendLog("❌ Lỗi importMGT! File có thể bị hỏng hoặc không tương thích.");
+                        continue;
+                    }
 
-            // Reset In/Out
-            try { item.clearInPoint(); item.clearOutPoint(); } catch (eClr) {}
-        }
+                    // 3. Set độ dài (vẫn cần thiết)
+                    var t_end = new Time();
+                    t_end.seconds = row.end;
+                    graphicClip.end = t_end;
 
-        sendLog("🎉 Hoàn tất Auto Edit (Source Trim + Gap).");
+                    // 4. Set thuộc tính
+                    var mgtComponent = graphicClip.getMGTComponent();
+                    if (mgtComponent) {
+                        var props = mgtComponent.properties;
+                        
+                        var textParam = props.getParamForDisplayName("MY_TEXT");
+                        if (textParam) textParam.setValue(textContent);
+                        else sendLog("⚠️ Lỗi MOGRT: Không tìm thấy 'MY_TEXT'.");
+
+
+                        sendLog("✅ Đã cập nhật Text MOGRT.");
+                    }
+                } catch(eMogrt) {
+                    sendLog("❌ Lỗi khi xử lý MOGRT: " + eMogrt);
+                    // Nếu lỗi ở đây, 99% là do file MOGRT không hợp lệ
+                }
+            } // Kết thúc xử lý text
+        } // Kết thúc vòng lặp for
+
+        sendLog("🎉 Hoàn tất Auto Edit.");
         return "done";
 
     } catch (e) {
