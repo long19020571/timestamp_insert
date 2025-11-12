@@ -66,12 +66,13 @@ document.getElementById("runBtn").addEventListener("click", () => {
         log("📂 CSV loaded. Gửi dữ liệu sang Premiere...");
 
         // ====== GỌI JSX TRONG PREMIERE (Đã cập nhật) ======
-        // Gửi thêm 4 tham số: mogrtPath, boxFillColor, boxStrokeColor
+
         const command = `autoEditFromCSV(
             ${JSON.stringify(csvText)}, 
             ${JSON.stringify(files)}, 
             ${JSON.stringify(mogrtPath)}
         )`;
+
 
         csInterface.evalScript(command, function (result) {
             if (result) log("✅ Kết quả: " + result);
@@ -81,3 +82,33 @@ document.getElementById("runBtn").addEventListener("click", () => {
 
     reader.readAsText(csvFile);
 });
+
+
+// ====== (MỚI) NÚT SET SEQUENCE SETTINGS ======
+document.getElementById("setSettingsBtn").addEventListener("click", () => {
+    const settingsFile = document.getElementById("settingsFile").files[0];
+
+    if (!settingsFile) {
+        alert("Vui lòng chọn file JSON settings!");
+        return;
+    }
+
+    // ====== ĐỌC FILE JSON ======
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const jsonText = e.target.result;
+        log("⚙️ JSON settings loaded. Gửi sang Premiere...");
+
+        // ====== GỌI JSX TRONG PREMIERE ======
+        // Sử dụng JSON.stringify để gửi toàn bộ nội dung text của file JSON
+        // sang ExtendScript một cách an toàn
+        const command = `applySequenceSettings(${JSON.stringify(jsonText)})`;
+
+        csInterface.evalScript(command, function (result) {
+            log("✅ Kết quả (Settings): " + result);
+        });
+    };
+
+    reader.readAsText(settingsFile);
+});
+

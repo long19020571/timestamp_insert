@@ -115,11 +115,98 @@ function findFilePath(list, filename) {
     return null;
 }
 
+// ===================================================
+// =============== (MỚI) SET SETTINGS ================
+// ===================================================
+function applySequenceSettings(jsonText) {
+    sendLog("⚙️ Bắt đầu áp dụng Sequence Settings...");
+
+    try {
+        if (!app.project.activeSequence) {
+            sendLog("❌ Không có sequence nào đang active.");
+            return "no_sequence";
+        }
+        var seq = app.project.activeSequence;
+
+        // 1. Lấy settings hiện tại
+        // Đây là một đối tượng SequenceSettings
+        var currentSettings = seq.getSettings();
+        if (!currentSettings) {
+            sendLog("❌ Không thể lấy settings của sequence active.");
+            return "settings_error";
+        }
+
+        // 2. Parse JSON từ người dùng
+        var userSettings;
+        try {
+            // Dùng eval để parse JSON trong ExtendScript (không có JSON.parse)
+            userSettings = eval('(' + jsonText + ')'); 
+        } catch (e) {
+            sendLog("❌ Lỗi parse JSON: " + e.toString());
+            return "json_parse_error";
+        }
+
+        sendLog("Đang áp dụng settings: " + jsonText);
+
+        // 3. Merge userSettings vào currentSettings
+        // Chúng ta lặp qua các key trong JSON của người dùng
+        for (var key in userSettings) {
+            if (userSettings.hasOwnProperty(key)) {
+                
+                // Kiểm tra xem key này có tồn tại trong đối tượng SequenceSettings không
+                if (currentSettings.hasOwnProperty(key)) {
+                    
+                    // XỬ LÝ TRƯỜNG HỢP ĐẶC BIỆT: audioSampleRate
+                    // Đây là một Time object, không phải là Integer
+                    if (key === "audioSampleRate") {
+                        var rate = parseInt(userSettings[key], 10);
+                        if (!isNaN(rate)) {
+                            // 'ticks' của Time object này chính là giá trị sample rate
+                            // Chúng ta phải gán nó dưới dạng string
+                            currentSettings.audioSampleRate.ticks = rate.toString(); 
+                            sendLog("Updated audioSampleRate to: " + rate);
+                        } else {
+                            sendLog("⚠️ Giá trị audioSampleRate không hợp lệ (bỏ qua): " + userSettings[key]);
+                        }
+                    } 
+                    // Xử lý các trường hợp còn lại (Int, Boolean, String)
+                    // Gán trực tiếp giá trị từ JSON của người dùng
+                    else {
+                        currentSettings[key] = userSettings[key];
+                        sendLog("Updated " + key + " to: " + userSettings[key]);
+                    }
+                } else {
+                    // Bỏ qua nếu key trong JSON không phải là một setting hợp lệ
+                    sendLog("⚠️ Key không tồn tại trong SequenceSettings (bỏ qua): " + key);
+                }
+            }
+        }
+
+        // 4. Áp dụng đối tượng settings đã được merge
+        var result = seq.setSettings(currentSettings);
+        
+        if (result === true) {
+            sendLog("✅ Đã áp dụng settings thành công!");
+            return "settings_applied_success";
+        } else {
+            sendLog("❌ Áp dụng settings thất bại (hàm setSettings trả về false).");
+            sendLog("Hãy kiểm tra xem editingMode có hợp lệ không.");
+            return "settings_apply_failed";
+        }
+
+    } catch (e) {
+        sendLog("❌ Lỗi tổng (applySequenceSettings): " + e);
+        return "error: " + e.toString();
+    }
+}
 
 // ===================================================
 // =============== MAIN FUNCTION =====================
 // ===================================================
-function autoEditFromCSV(csvText, videoPaths, mogrtPath, boxFillColor, boxStrokeColor) {
+// ===================================================
+// =============== MAIN FUNCTION (CẬP NHẬT) ============
+// ===================================================
+function autoEditFromCSV(csvText, videoPaths, mogrtPath) {
     sendLog("🚀 Bắt đầu Auto Edit (Sử dụng seq.importMGT)");
 
     try {
@@ -133,9 +220,6 @@ function autoEditFromCSV(csvText, videoPaths, mogrtPath, boxFillColor, boxStroke
         var seq = app.project.activeSequence; // Lấy sequence
         if (!seq.videoTracks || seq.videoTracks.numTracks === 0) return "no_track";
 
-        // --- (CẬP NHẬT) Đã xóa khối logic import MOGRT ở đây ---
-        // Chúng ta sẽ import trực tiếp trong vòng lặp
-
         if (seq.videoTracks.numTracks < 2) {
              sendLog("⚠️ Cảnh báo: Cần ít nhất 2 video track (V1, V2). Sẽ bỏ qua MOGRT text.");
         }
@@ -143,10 +227,10 @@ function autoEditFromCSV(csvText, videoPaths, mogrtPath, boxFillColor, boxStroke
 
         for (var i = 0; i < data.length; i++) {
             var row = data[i];
-            var duration = row.end - row.start;
+            var duration = row.end - row.start; // Target Duration on Timeline
             if (duration <= 0) continue;
 
-            // --- PHẦN 1: XỬ LÝ VIDEO (Giữ nguyên logic 'Find or Import') ---
+            // --- (CẬP NHẬT) PHẦN 1: XỬ LÝ VIDEO (Thêm logic "Fit to Fill") ---
             sendLog("🎞 Clip " + (i + 1) + ": " + row.name);
             var clipPath = findFilePath(videoPaths, row.name);
             var item = null;
@@ -160,21 +244,57 @@ function autoEditFromCSV(csvText, videoPaths, mogrtPath, boxFillColor, boxStroke
                         item = findProjectItemByName(app.project.rootItem, String(row.name).toLowerCase());
                     }
                 } catch (eImp) { sendLog("⚠️ Lỗi import: " + eImp); }
+            } else {
+                 try {
+                    var extFolder = new Folder(Folder.startup.fullName + "/video_fallback");
+                    if (extFolder.exists) {
+                        var fallbackFile = new File(extFolder.fsName + "/" + row.name);
+                        if (fallbackFile.exists) {
+                            clipPath = fallbackFile.fsName;
+                            sendLog("📁 Tìm thấy file fallback trong extension folder: " + clipPath);
+                        } else {
+                            sendLog("⚠️ Không tìm thấy trong fallback folder: " + fallbackFile.fsName);
+                        }
+                    } else {
+                        sendLog("⚠️ Thư mục fallback không tồn tại: " + extFolder.fsName);
+                    }
+                } catch (eFallback) {
+                    sendLog("❌ Lỗi khi kiểm tra fallback folder: " + eFallback);
+                }
             }
 
             if (item) {
+                
                 try {
+                    item.setStartTime("0");
                     item.setInPoint(row.start, 4);
                     item.setOutPoint(row.end, 4);
                     
-                    var t = new Time();
-                    t.seconds = row.start;
-                    seq.videoTracks[1].insertClip(item, t); // Chèn vào V1 (index 0)
-                    sendLog("✅ Đã chèn clip: " + row.name + " @ " + row.start + "s");
+                    // (MỚI) Lấy thông tin duration
+                    var targetDuration = row.end - row.start;
+                    
+                    var t_start = new Time();
+                    t_start.seconds = row.start; // Thời điểm chèn (Timeline In)
+                    
+                    var videoTrack = seq.videoTracks[0]; // Chèn vào V1
 
-                    // *** FIX ***: Sửa lỗi typo
-                    item.clearInPoint(); 
+                    
+                    sendLog("Sử dụng Source Trim: Source >= Target (" + targetDuration + "s).");
+
+                    // 1. Trim source (1:1 mapping timecode)
+                    
+                    
+                    // 2. Chèn clip vào V1
+                    videoTrack.insertClip(item, t_start); 
+                    
+                    
+                    sendLog("✅ Đã chèn clip (Source Trim): " + row.name + " @ " + row.start + "s");
+                    
+                    item.setScaleToFrameSize();
+                    sendLog("✅ Đã 'Scale to Frame Size' cho clip.");
+
                     item.clearOutPoint();
+
                 } catch (eVideo) {
                     sendLog("❌ Lỗi xử lý clip: " + eVideo);
                 }
@@ -182,7 +302,7 @@ function autoEditFromCSV(csvText, videoPaths, mogrtPath, boxFillColor, boxStroke
                 sendLog("⚠️ Không tìm thấy file: " + row.name + ". Bỏ qua.");
             }
             
-            // --- (CẬP NHẬT) PHẦN 2: XỬ LÝ TEXT MOGRT (Dùng importMGT) ---
+            // --- PHẦN 2: XỬ LÝ TEXT MOGRT (Giữ nguyên logic V2) ---
             var textContent = null;
             if (row.textEdit && row.textEdit.indexOf("TEXT_EDIT(") === 0) {
                 textContent = row.textEdit.substring(10, row.textEdit.length - 1);
@@ -197,13 +317,13 @@ function autoEditFromCSV(csvText, videoPaths, mogrtPath, boxFillColor, boxStroke
                     sendLog("✍️ Đang import MOGRT (seq.importMGT): " + textContent);
 
                     // 1. Chuyển đổi 'seconds' (giây) sang 'ticks'
-                    var t_start = new Time();
-                    t_start.seconds = row.start;
-                    var timeInTicks = t_start.ticks; // Lấy 'ticks'
+                    var t_start_ticks = new Time();
+                    t_start_ticks.seconds = row.start;
+                    var timeInTicks = t_start_ticks.ticks; // Lấy 'ticks'
                     
                     // 2. GỌI HÀM importMGT()
                     // (path, timeInTicks, vidTrackOffset, audTrackOffset)
-                    // vidTrackOffset = 1 (nghĩa là chèn vào V2, vì V1 là index 0)
+                    // vidTrackOffset = 2 (nghĩa là chèn vào V2)
                     // audTrackOffset = 0 (không có audio)
                     graphicClip = seq.importMGT(mogrtPath, timeInTicks, 2, 0);
                     
@@ -231,7 +351,6 @@ function autoEditFromCSV(csvText, videoPaths, mogrtPath, boxFillColor, boxStroke
                     }
                 } catch(eMogrt) {
                     sendLog("❌ Lỗi khi xử lý MOGRT: " + eMogrt);
-                    // Nếu lỗi ở đây, 99% là do file MOGRT không hợp lệ
                 }
             } // Kết thúc xử lý text
         } // Kết thúc vòng lặp for
